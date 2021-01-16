@@ -2,7 +2,7 @@
 using System.IO;
 using System.Linq;
 using uTinyRipper.Layout;
-using uTinyRipper.Lz4;
+using K4os.Compression.LZ4;
 
 namespace uTinyRipper.Classes.Shaders
 {
@@ -27,14 +27,20 @@ namespace uTinyRipper.Classes.Shaders
 			offsets = new uint[segmentCount];
 			compressedLengths = new uint[segmentCount];
 			decompressedLengths = new uint[segmentCount];
-			for (int i = 0; i < segmentCount; i++)
+			for (int i = 0; i <= segmentCount && segmentCount > 0; i++)
 			{
-				uint offset = (uint)memStream.Position;
-				WriteBlob(layout, memStream, out uint compressedLength, out uint decompressedLength, i);
+				if (i == segmentCount)
+				{
+					memStream.Position = offsets[0];
+				}
 
-				offsets[i] = offset;
-				compressedLengths[i] = compressedLength;
-				decompressedLengths[i] = decompressedLength;
+				int index = i == segmentCount ? 0 : i;
+				uint offset = (uint)memStream.Position;
+				WriteBlob(layout, memStream, out uint compressedLength, out uint decompressedLength, index);
+
+				offsets[index] = offset;
+				compressedLengths[index] = compressedLength;
+				decompressedLengths[index] = decompressedLength;
 			}
 		}
 
@@ -72,11 +78,10 @@ namespace uTinyRipper.Classes.Shaders
 
 		private void ReadBlob(AssetLayout layout, MemoryStream memStream, uint compressedLength, uint decompressedLength, int segment)
 		{
+			byte[] compressedBuffer = new byte[compressedLength];
 			byte[] decompressedBuffer = new byte[decompressedLength];
-			using (Lz4DecodeStream lz4Stream = new Lz4DecodeStream(memStream, compressedLength))
-			{
-				lz4Stream.ReadBuffer(decompressedBuffer, 0, decompressedBuffer.Length);
-			}
+			memStream.Read(compressedBuffer, 0, (int)compressedLength);
+			LZ4Codec.Decode(compressedBuffer, 0, (int)compressedLength, decompressedBuffer, 0, (int)decompressedLength);
 
 			using (MemoryStream blobMem = new MemoryStream(decompressedBuffer))
 			{
@@ -94,6 +99,8 @@ namespace uTinyRipper.Classes.Shaders
 
 		private void WriteBlob(AssetLayout layout, MemoryStream memStream, out uint compressedLength, out uint decompressedLength, int segment)
 		{
+			byte[] decompressedBuffer;
+
 			using (MemoryStream blobMem = new MemoryStream())
 			{
 				using (AssetWriter blobWriter = new AssetWriter(blobMem, EndianType.LittleEndian, layout))
@@ -104,17 +111,15 @@ namespace uTinyRipper.Classes.Shaders
 					}
 					WriteSegment(blobWriter, segment);
 				}
-				decompressedLength = (uint)blobMem.Length;
 
-				blobMem.Position = 0;
-#warning TODO:
-				compressedLength = 0;
-				/*using (Lz4EncodeStream lz4Stream = new Lz4EncodeStream(blobMem, blobMem.Length))
-				{
-					lz4Stream.Write(memStream);
-					compressedLength = lz4Stream.Length;
-				}*/
+				decompressedLength = (uint)blobMem.Length;
+				decompressedBuffer = blobMem.ToArray();
 			}
+
+			byte[] compressedBuffer = new byte[LZ4Codec.MaximumOutputSize((int)decompressedLength)];
+			// Unsure if compression level matters below max (which doesn't work) but I don't feel like trying out every value and level 8HC matches what the Unity Editor produces
+			compressedLength = (uint)LZ4Codec.Encode(decompressedBuffer, 0, (int)decompressedLength, compressedBuffer, 0, compressedBuffer.Length, LZ4Level.L08_HC);
+			memStream.Write(compressedBuffer, 0, (int)compressedLength);
 		}
 
 		private void ReadSegment(AssetReader reader, int segment)
@@ -141,8 +146,9 @@ namespace uTinyRipper.Classes.Shaders
 				ref ShaderSubProgramEntry entry = ref Entries[i];
 				if (entry.Segment == segment)
 				{
-					writer.BaseStream.Position = entry.Offset;
+					entry.Offset = (int)writer.BaseStream.Position;
 					SubPrograms[i].Write(writer);
+					entry.Length = (int)writer.BaseStream.Position - entry.Offset;
 				}
 			}
 		}

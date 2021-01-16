@@ -94,7 +94,7 @@ namespace uTinyRipper.Classes.Shaders
 			ProgramData = reader.ReadByteArray();
 			reader.AlignStream();
 
-			int sourceMap = reader.ReadInt32();
+			int sourceMap = SourceMap = reader.ReadInt32();
 			int bindCount = reader.ReadInt32();
 			ShaderBindChannel[] channels = new ShaderBindChannel[bindCount];
 			for (int i = 0; i < bindCount; i++)
@@ -300,8 +300,183 @@ namespace uTinyRipper.Classes.Shaders
 
 		public void Write(AssetWriter writer)
 		{
-#warning TODO:
-			throw new NotImplementedException();
+			writer.Write(GetExpectedProgramVersion(writer.Version));
+
+			writer.Write(ProgramType);
+			writer.Write(StatsALU);
+			writer.Write(StatsTEX);
+			writer.Write(StatsFlow);
+			if (HasStatsTempRegister(writer.Version))
+			{
+				writer.Write(StatsTempRegister);
+			}
+
+			writer.WriteArray(GlobalKeywords);
+			if (HasLocalKeywords(writer.Version))
+			{
+				writer.WriteArray(LocalKeywords);
+			}
+			writer.WriteArray(ProgramData);
+			writer.AlignStream();
+
+			writer.Write(SourceMap);
+			int bindCount = BindChannels.Channels.Length;
+			writer.Write(bindCount);
+			for (int i = 0; i < bindCount; i++)
+			{
+				ShaderBindChannel channel = BindChannels.Channels[i];
+				writer.Write((uint)channel.Source);
+				writer.Write((uint)channel.Target);
+			}
+
+			VectorParameter[] vectors;
+			MatrixParameter[] matrices;
+			StructParameter[] structs;
+
+			int paramGroupCount = ConstantBuffers.Length + 1;
+			writer.Write(paramGroupCount);
+			for (int i = 0; i < paramGroupCount; i++)
+			{
+				if (i == 0)
+				{
+					vectors = VectorParameters;
+					matrices = MatrixParameters;
+					structs = StructParameters;
+
+					writer.Write("");
+					writer.Write(0);
+
+				}
+				else
+				{
+					ConstantBuffer constBuffer = ConstantBuffers[i - 1];
+					vectors = constBuffer.VectorParams;
+					matrices = constBuffer.MatrixParams;
+					structs = constBuffer.StructParams;
+
+					writer.Write(constBuffer.Name);
+					writer.Write(constBuffer.Size);
+				}
+
+				writer.Write(vectors.Length + matrices.Length);
+				foreach (MatrixParameter matrix in matrices)
+				{
+					writer.Write(matrix.Name);
+					writer.Write((int)matrix.Type);
+					writer.Write((int)matrix.RowCount);
+					writer.Write((int)matrix.ColumnCount);
+					writer.Write(1);
+					writer.Write(IsAllParamArgs(writer.Version) ? matrix.ArraySize : 0);
+					writer.Write(matrix.Index);
+				}
+				foreach (VectorParameter vector in vectors)
+				{
+					writer.Write(vector.Name);
+					writer.Write((int)vector.Type);
+					writer.Write(0);
+					writer.Write((int)vector.Dim);
+					writer.Write(0);
+					writer.Write(IsAllParamArgs(writer.Version) ? vector.ArraySize : 0);
+					writer.Write(vector.Index);
+				}
+
+				if (HasStructParameters(writer.Version))
+				{
+					writer.Write(structs.Length);
+					foreach (StructParameter @struct in structs)
+					{
+						writer.Write(@struct.Name);
+						writer.Write(@struct.Index);
+						writer.Write(@struct.ArraySize);
+						writer.Write(@struct.StructSize);
+
+						writer.Write(@struct.VectorMembers.Length + @struct.MatrixMembers.Length);
+						foreach (MatrixParameter matrix in @struct.MatrixMembers)
+						{
+							string[] nameParts = matrix.Name.Split('.');
+							writer.Write(nameParts[nameParts.Length - 1]);
+							writer.Write((int)matrix.Type);
+							writer.Write(matrix.RowCount);
+							writer.Write(matrix.ColumnCount);
+							writer.Write(1);
+							writer.Write(IsAllParamArgs(writer.Version) ? matrix.ArraySize : 0);
+							writer.Write(matrix.Index);
+						}
+						foreach (VectorParameter vector in @struct.VectorMembers)
+						{
+							string[] nameParts = vector.Name.Split('.');
+							writer.Write(nameParts[nameParts.Length - 1]);
+							writer.Write((int)vector.Type);
+							writer.Write(0);
+							writer.Write((int)vector.Dim);
+							writer.Write(1);
+							writer.Write(IsAllParamArgs(writer.Version) ? vector.ArraySize : 0);
+							writer.Write(vector.Index);
+						}
+					}
+				}
+			}
+
+			writer.Write(TextureParameters.Length +
+				BufferParameters.Length +
+				(HasUAVParameters(writer.Version) ? UAVParameters.Length : 0) +
+				(HasSamplerParameters(writer.Version) ? SamplerParameters.Length : 0) +
+				ConstantBufferBindings.Length +
+				(HasStructParameters(writer.Version) ? StructParameters.Length : 0));
+			foreach (TextureParameter texture in TextureParameters)
+			{
+				writer.Write(texture.Name);
+				writer.Write(0);
+				writer.Write(texture.Index);
+				if (HasNewTextureParams(writer.Version))
+				{
+					writer.Write(texture.SamplerIndex);
+					writer.Write((uint)((texture.Dim << 1) & (texture.MultiSampled ? 1 : 0)));
+				}
+				else if (HasMultiSampled(writer.Version))
+				{
+					writer.Write(texture.SamplerIndex << 8 & texture.Dim);
+					writer.Write((uint)(texture.MultiSampled ? 1 : 0));
+				}
+				else
+				{
+					writer.Write((texture.SamplerIndex == -1 ? 0xFFFFFF : texture.SamplerIndex) << 8 & texture.Dim);
+				}
+			}
+			foreach (BufferBinding binding in ConstantBufferBindings)
+			{
+				writer.Write(binding.Name);
+				writer.Write(1);
+				writer.Write(binding.Index);
+				writer.Write(0);
+			}
+			foreach (BufferBinding buffer in BufferParameters)
+			{
+				writer.Write(buffer.Name);
+				writer.Write(2);
+				writer.Write(buffer.Index);
+				writer.Write(0);
+			}
+			if (HasUAVParameters(writer.Version))
+			{
+				foreach (UAVParameter uav in UAVParameters)
+				{
+					writer.Write(uav.Name);
+					writer.Write(3);
+					writer.Write(uav.Index);
+					writer.Write(uav.OriginalIndex);
+				}
+			}
+			if (HasSamplerParameters(writer.Version))
+			{
+				foreach (SamplerParameter sampler in SamplerParameters)
+				{
+					writer.Write("");
+					writer.Write(4);
+					writer.Write(sampler.BindPoint);
+					writer.Write((int)sampler.Sampler);
+				}
+			}
 		}
 
 		public void Export(ShaderWriter writer, ShaderType type)
@@ -357,6 +532,7 @@ namespace uTinyRipper.Classes.Shaders
 		public string[] GlobalKeywords { get; set; }
 		public string[] LocalKeywords { get; set; }
 		public byte[] ProgramData { get; set; }
+		public int SourceMap { get; set; }
 		public VectorParameter[] VectorParameters { get; set; }
 		public MatrixParameter[] MatrixParameters { get; set; }
 		public TextureParameter[] TextureParameters { get; set; }
