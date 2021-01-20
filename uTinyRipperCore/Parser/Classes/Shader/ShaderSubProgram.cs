@@ -396,8 +396,8 @@ namespace uTinyRipper.Classes.Shaders
 							string[] nameParts = matrix.Name.Split('.');
 							writer.Write(nameParts[nameParts.Length - 1]);
 							writer.Write((int)matrix.Type);
-							writer.Write(matrix.RowCount);
-							writer.Write(matrix.ColumnCount);
+							writer.Write((int)matrix.RowCount);
+							writer.Write((int)matrix.ColumnCount);
 							writer.Write(1);
 							writer.Write(IsAllParamArgs(writer.Version) ? matrix.ArraySize : 0);
 							writer.Write(matrix.Index);
@@ -409,7 +409,7 @@ namespace uTinyRipper.Classes.Shaders
 							writer.Write((int)vector.Type);
 							writer.Write(0);
 							writer.Write((int)vector.Dim);
-							writer.Write(1);
+							writer.Write(0);
 							writer.Write(IsAllParamArgs(writer.Version) ? vector.ArraySize : 0);
 							writer.Write(vector.Index);
 						}
