@@ -421,8 +421,7 @@ namespace uTinyRipper.Classes.Shaders
 				BufferParameters.Length +
 				(HasUAVParameters(writer.Version) ? UAVParameters.Length : 0) +
 				(HasSamplerParameters(writer.Version) ? SamplerParameters.Length : 0) +
-				ConstantBufferBindings.Length +
-				(HasStructParameters(writer.Version) ? StructParameters.Length : 0));
+				ConstantBufferBindings.Length);
 			foreach (TextureParameter texture in TextureParameters)
 			{
 				writer.Write(texture.Name);
