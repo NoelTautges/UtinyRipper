@@ -17,7 +17,7 @@ namespace DXShaderRestorer
 			ShaderVariableType = ShaderVariableType.Void;
 			Rows = 0;
 			Columns = 0;
-			ElementCount = 0;
+			ElementCount = (ushort)structParameter.ArraySize;
 			MemberCount = (ushort)Members.Count();
 			MemberOffset = 0;
 			m_programType = programType;
