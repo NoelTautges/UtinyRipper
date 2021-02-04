@@ -112,7 +112,11 @@ namespace DXShaderRestorer
 			variables = variables.OrderBy(v => v.Index).ToList();
 			//Dummy variables prevents errors in rare edge cases but produces more verbose output
 			bool useDummyVariables = true;
-			if (useDummyVariables)
+			bool isUnityFlexibleInstancingBuffer = variables.Count == 1
+				&& constantBuffer.StructParams.Length == 1
+				&& constantBuffer.StructParams[0].ArraySize == 2
+				&& constantBuffer.Name.StartsWith("UnityInstancing");
+			if (useDummyVariables && !isUnityFlexibleInstancingBuffer)
 			{
 				List<Variable> allVariables = new List<Variable>();
 				uint currentSize = 0;
