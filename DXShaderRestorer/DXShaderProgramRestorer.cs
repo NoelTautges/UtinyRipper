@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using uTinyRipper;
 using uTinyRipper.Classes.Shaders;
 
@@ -28,7 +29,9 @@ namespace DXShaderRestorer
 						chunkOffsets.Add(reader.ReadUInt32());
 					}
 					uint bodyOffset = (uint)reader.BaseStream.Position;
-					// Check if shader already has resource chunk
+					long inputOffset = 0;
+					IEnumerable<byte[]> sortedInputs = Enumerable.Empty<byte[]>();
+					// Check if shader already has resource chunk and sort input declarations
 					foreach (uint chunkOffset in chunkOffsets)
 					{
 						reader.BaseStream.Position = chunkOffset + baseOffset;
@@ -38,6 +41,46 @@ namespace DXShaderRestorer
 							reader.BaseStream.Position = baseOffset;
 							byte[] original = reader.ReadBytes((int)reader.BaseStream.Length);
 							return original;
+						}
+						else if (fourCc == SHDRFourCC)
+						{
+							uint chunkLength = reader.ReadUInt32();
+							uint shaderVersion = reader.ReadUInt32();
+							uint shaderLength = reader.ReadUInt32();
+							List<byte[]> inputs = new List<byte[]>();
+
+							while (reader.BaseStream.Position < reader.BaseStream.Length)
+							{
+								long pos = reader.BaseStream.Position;
+								uint metadata = reader.ReadUInt32();
+								uint opcode = metadata & 0x00007ff;
+								int tokenLength = (int)((metadata & 0x7f000000) >> 22);
+
+								// OPCODE_DCL_INPUT in HLSLcc
+								if ((opcode != 95 && inputOffset != 0) || tokenLength == 0)
+								{
+									break;
+								}
+								
+								if (opcode == 95)
+								{
+									if (inputOffset == 0)
+									{
+										inputOffset = pos;
+									}
+
+									reader.BaseStream.Position = pos;
+									inputs.Add(reader.ReadBytes(tokenLength));
+								}
+
+								reader.BaseStream.Position = pos + tokenLength;
+							}
+
+							ShaderBindChannel[] channels = shaderSubProgram.BindChannels.Channels;
+							sortedInputs = inputs
+								.Select((x, i) => new KeyValuePair<byte[], int>(x, i))
+								.OrderBy(pair => channels[pair.Value].Source)
+								.Select(pair => pair.Key);
 						}
 					}
 					reader.BaseStream.Position = bodyOffset;
@@ -64,6 +107,13 @@ namespace DXShaderRestorer
 					writer.Write(resourceChunkData);
 					byte[] rest = reader.ReadBytes((int)reader.BaseStream.Length - (int)reader.BaseStream.Position);
 					writer.Write(rest);
+
+					writer.BaseStream.Position = inputOffset + resourceChunkData.Length + 4;
+					foreach (byte[] input in sortedInputs)
+					{
+						writer.Write(input);
+					}
+
 					return dest.ToArray();
 				}
 			}
@@ -88,5 +138,9 @@ namespace DXShaderRestorer
 		/// 'RDEF' ascii
 		/// </summary>
 		public const uint RDEFFourCC = 0x46454452;
+		/// <summary>
+		/// 'SHDR' ascii
+		/// </summary>
+		public const uint SHDRFourCC = 0x52444853;
 	}
 }
