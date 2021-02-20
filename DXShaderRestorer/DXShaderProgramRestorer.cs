@@ -1,3 +1,4 @@
+using HLSLccWrapper;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,58 +30,127 @@ namespace DXShaderRestorer
 						chunkOffsets.Add(reader.ReadUInt32());
 					}
 					uint bodyOffset = (uint)reader.BaseStream.Position;
-					long inputOffset = 0;
-					IEnumerable<byte[]> sortedInputs = Enumerable.Empty<byte[]>();
+					uint shaderChunkLength = 0;
+					uint shaderDataLength = 0;
+					uint addedBytes = 0;
+					long shaderInputOffset = 0;
+					long shaderInputEnd = 0;
+					ShaderInputSignature[] inputSignatures = new ShaderInputSignature[0];
+					IEnumerable<byte[]> sortedInputDeclarations = Enumerable.Empty<byte[]>();
 					// Check if shader already has resource chunk and sort input declarations
 					foreach (uint chunkOffset in chunkOffsets)
 					{
 						reader.BaseStream.Position = chunkOffset + baseOffset;
 						uint fourCc = reader.ReadUInt32();
-						if (fourCc == RDEFFourCC)
+						switch (fourCc)
 						{
-							reader.BaseStream.Position = baseOffset;
-							byte[] original = reader.ReadBytes((int)reader.BaseStream.Length);
-							return original;
-						}
-						else if (fourCc == SHDRFourCC)
-						{
-							uint chunkLength = reader.ReadUInt32();
-							uint shaderVersion = reader.ReadUInt32();
-							uint shaderLength = reader.ReadUInt32();
-							List<byte[]> inputs = new List<byte[]>();
-
-							while (reader.BaseStream.Position < reader.BaseStream.Length)
-							{
-								long pos = reader.BaseStream.Position;
-								uint metadata = reader.ReadUInt32();
-								uint opcode = metadata & 0x00007ff;
-								int tokenLength = (int)((metadata & 0x7f000000) >> 22);
-
-								// OPCODE_DCL_INPUT in HLSLcc
-								if ((opcode != 95 && inputOffset != 0) || tokenLength == 0)
+							// RDEF
+							case 0x46454452:
 								{
-									break;
+									reader.BaseStream.Position = baseOffset;
+									byte[] original = reader.ReadBytes((int)reader.BaseStream.Length);
+									return original;
 								}
-								
-								if (opcode == 95)
+							// ISGN
+							case 0x4E475349:
 								{
-									if (inputOffset == 0)
+									uint inputChunkLength = reader.ReadUInt32();
+									uint inputCount = reader.ReadUInt32();
+									inputSignatures = new ShaderInputSignature[inputCount];
+									uint inputUnknown = reader.ReadUInt32();
+
+									for (int i = 0; i < inputCount; i++)
 									{
-										inputOffset = pos;
+										inputSignatures[i] = new ShaderInputSignature();
+										inputSignatures[i].Read(reader);
 									}
 
-									reader.BaseStream.Position = pos;
-									inputs.Add(reader.ReadBytes(tokenLength));
+									continue;
 								}
+								break;
+							// SHDR
+							case 0x52444853:
+								{
+									shaderChunkLength = reader.ReadUInt32();
+									uint shaderVersion = reader.ReadUInt32();
+									shaderDataLength = reader.ReadUInt32();
+									List<byte[]> inputDeclarations = new List<byte[]>();
+									bool pixelShader = false;
+									int inputSignatureIndex = 0;
 
-								reader.BaseStream.Position = pos + tokenLength;
-							}
+									while (reader.BaseStream.Position < reader.BaseStream.Length)
+									{
+										long pos = reader.BaseStream.Position;
+										uint metadata = reader.ReadUInt32();
+										uint opcode = metadata & 0x00007ff;
+										int tokenLength = (int)((metadata & 0x7f000000) >> 22);
 
-							ShaderBindChannel[] channels = shaderSubProgram.BindChannels.Channels;
-							sortedInputs = inputs
-								.Select((x, i) => new KeyValuePair<byte[], int>(x, i))
-								.OrderBy(pair => channels[pair.Value].Source)
-								.Select(pair => pair.Key);
+										// OPCODE_DCL_INPUT/OPCODE_DCL_INPUT_PS in HLSLcc
+										if (opcode == 95 || opcode == 98)
+										{
+											if (shaderInputOffset == 0)
+											{
+												shaderInputOffset = pos;
+											}
+
+											long operandPos = reader.BaseStream.Position;
+											reader.BaseStream.Position = pos;
+											byte[] inputBytes = reader.ReadBytes(tokenLength);
+											reader.BaseStream.Position = operandPos;
+
+											if (opcode == 95)
+											{
+												inputDeclarations.Add(inputBytes);
+											}
+											else if (opcode == 98)
+											{
+												pixelShader = true;
+
+												uint operandMetadata = reader.ReadUInt32();
+												ShaderInputComponentFlags mask = (ShaderInputComponentFlags)((operandMetadata & 0x000000f0) >> 4);
+												uint register = reader.ReadUInt32();
+
+												while (mask != inputSignatures[inputSignatureIndex].ReadWriteMask ||
+													register != inputSignatures[inputSignatureIndex].Register)
+												{
+													if (inputSignatures[inputSignatureIndex].Mask != ShaderInputComponentFlags.All ||
+														inputSignatures[inputSignatureIndex].ReadWriteMask != ShaderInputComponentFlags.None ||
+														inputSignatures[inputSignatureIndex].Register != 0)
+													{
+														// Add input declaration modified to fit signature
+														byte[] inputCopy = (byte[])inputBytes.Clone();
+														inputCopy[4] &= 0xf;
+														inputCopy[4] |= (byte)((int)inputSignatures[inputSignatureIndex].Mask << 4);
+														inputCopy[8] = (byte)inputSignatures[inputSignatureIndex].Register;
+														inputDeclarations.Add(inputCopy);
+														addedBytes += (uint)inputCopy.Length;
+													}
+
+													inputSignatureIndex++;
+												}
+
+												inputDeclarations.Add(inputBytes);
+												inputSignatureIndex++;
+											}
+										}
+										else if (shaderInputOffset != 0 || tokenLength == 0)
+										{
+											reader.BaseStream.Position -= 4;
+											break;
+										}
+
+										reader.BaseStream.Position = pos + tokenLength;
+									}
+
+									shaderInputEnd = reader.BaseStream.Position;
+
+									ShaderBindChannel[] channels = shaderSubProgram.BindChannels.Channels;
+									sortedInputDeclarations = pixelShader ? inputDeclarations.AsEnumerable() : inputDeclarations
+										.Select((x, i) => new KeyValuePair<byte[], int>(x, i))
+										.OrderBy(pair => channels[pair.Value].Source)
+										.Select(pair => pair.Key);
+								}
+								break;
 						}
 					}
 					reader.BaseStream.Position = bodyOffset;
@@ -94,6 +164,7 @@ namespace DXShaderRestorer
 					chunkOffsets.Insert(0, bodyOffset - baseOffset + 4);
 					chunkCount += 1;
 					totalSize += (uint)resourceChunkData.Length;
+					totalSize += addedBytes;
 
 					writer.Write(magicBytes);
 					writer.Write(checksum);
@@ -105,13 +176,30 @@ namespace DXShaderRestorer
 						writer.Write(chunkOffset);
 					}
 					writer.Write(resourceChunkData);
-					byte[] rest = reader.ReadBytes((int)reader.BaseStream.Length - (int)reader.BaseStream.Position);
-					writer.Write(rest);
 
-					writer.BaseStream.Position = inputOffset + resourceChunkData.Length + 4;
-					foreach (byte[] input in sortedInputs)
+					if (shaderInputOffset != 0)
 					{
-						writer.Write(input);
+						byte[] preInputBytes = reader.ReadBytes((int)shaderInputOffset - (int)reader.BaseStream.Position);
+						writer.Write(preInputBytes);
+
+						foreach (byte[] input in sortedInputDeclarations)
+						{
+							writer.Write(input);
+						}
+
+						reader.BaseStream.Position = shaderInputEnd;
+						byte[] postInputBytes = reader.ReadBytes((int)reader.BaseStream.Length - (int)shaderInputEnd);
+						writer.Write(postInputBytes);
+
+						writer.BaseStream.Position = chunkOffsets.Last() + 4;
+						writer.Write(shaderChunkLength + addedBytes);
+						writer.BaseStream.Position += 4;
+						writer.Write(shaderDataLength + addedBytes / 4);
+					}
+					else
+					{
+						byte[] rest = reader.ReadBytes((int)reader.BaseStream.Length - (int)reader.BaseStream.Position);
+						writer.Write(rest);
 					}
 
 					return dest.ToArray();
@@ -133,14 +221,5 @@ namespace DXShaderRestorer
 				}
 			}
 		}
-
-		/// <summary>
-		/// 'RDEF' ascii
-		/// </summary>
-		public const uint RDEFFourCC = 0x46454452;
-		/// <summary>
-		/// 'SHDR' ascii
-		/// </summary>
-		public const uint SHDRFourCC = 0x52444853;
 	}
 }
