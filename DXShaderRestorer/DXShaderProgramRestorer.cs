@@ -108,7 +108,7 @@ namespace DXShaderRestorer
 												uint currentRegister = reader.ReadUInt32();
 												uint registerDiff = currentRegister - register;
 
-												if (registerDiff > 1 && false)
+												if (registerDiff > 1)
                                                 {
 													for (int i = inputSignatureIndex; i < inputSignatures.Length; i++)
 													{
@@ -119,7 +119,7 @@ namespace DXShaderRestorer
 															continue;
 														}
 
-														for (int j = (int)(i - registerDiff); j < i; j++)
+														for (long j = i - registerDiff + 1; j < i; j++)
 														{
 															// Add input declaration modified to fit signature
 															byte[] inputCopy = (byte[])inputBytes.Clone();
