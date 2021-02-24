@@ -72,7 +72,6 @@ namespace DXShaderRestorer
 									shaderDataLength = reader.ReadUInt32();
 									List<byte[]> inputDeclarations = new List<byte[]>();
 									bool pixelShader = false;
-									uint register = 0;
 									int inputSignatureIndex = 0;
 
 									while (reader.BaseStream.Position < reader.BaseStream.Length)
@@ -105,38 +104,32 @@ namespace DXShaderRestorer
 
 												uint operandMetadata = reader.ReadUInt32();
 												ShaderInputComponentFlags mask = (ShaderInputComponentFlags)((operandMetadata & 0x000000f0) >> 4);
-												uint currentRegister = reader.ReadUInt32();
-												uint registerDiff = currentRegister - register;
+												uint register = reader.ReadUInt32();
 
-												if (registerDiff > 1)
-                                                {
-													for (int i = inputSignatureIndex; i < inputSignatures.Length; i++)
+												for (int i = inputSignatureIndex; i < inputSignatures.Length; i++)
+												{
+													ShaderInputSignature sig = inputSignatures[i];
+
+													if (sig.SystemValueType != 0)
 													{
-														ShaderInputSignature sig = inputSignatures[i];
-
-														if (mask != sig.ReadWriteMask || currentRegister != sig.Register)
-														{
-															continue;
-														}
-
-														for (long j = i - registerDiff + 1; j < i; j++)
-														{
-															// Add input declaration modified to fit signature
-															byte[] inputCopy = (byte[])inputBytes.Clone();
-															inputCopy[4] &= 0xf;
-															inputCopy[4] |= (byte)((int)inputSignatures[j].Mask << 4);
-															inputCopy[8] = (byte)inputSignatures[j].Register;
-															inputDeclarations.Add(inputCopy);
-															addedBytes += (uint)inputCopy.Length;
-														}
-
+														continue;
+													}
+													else if (mask == sig.ReadWriteMask && register == sig.Register)
+													{
 														inputSignatureIndex = i + 1;
 														break;
 													}
-                                                }
+
+													// Add input declaration modified to fit signature
+													byte[] inputCopy = (byte[])inputBytes.Clone();
+													inputCopy[4] &= 0xf;
+													inputCopy[4] |= (byte)((int)inputSignatures[i].Mask << 4);
+													inputCopy[8] = (byte)inputSignatures[i].Register;
+													inputDeclarations.Add(inputCopy);
+													addedBytes += (uint)inputCopy.Length;
+												}
 
 												inputDeclarations.Add(inputBytes);
-												register = currentRegister;
 											}
 										}
 										else if (shaderInputOffset != 0 || tokenLength == 0)
