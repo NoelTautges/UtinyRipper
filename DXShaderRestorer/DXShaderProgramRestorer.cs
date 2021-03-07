@@ -28,14 +28,10 @@ namespace DXShaderRestorer
 						chunkOffsets.Add(reader.ReadUInt32());
 					}
 					uint bodyOffset = (uint)reader.BaseStream.Position;
-					uint shaderChunkLength = 0;
-					uint shaderDataLength = 0;
-					uint addedBytes = 0;
-					long shaderInputOffset = 0;
-					long shaderInputEnd = 0;
-					ShaderInputSignature[] inputSignatures = new ShaderInputSignature[0];
-					IEnumerable<byte[]> sortedInputDeclarations = Enumerable.Empty<byte[]>();
-					// Check if shader already has resource chunk and sort input declarations
+					ShaderInputSignatureChunk inputSignatureChunk = new ShaderInputSignatureChunk();
+					ShaderDataChunk dataChunk = new ShaderDataChunk();
+
+					// Check if shader already has resource chunk and correct input declarations
 					foreach (uint chunkOffset in chunkOffsets)
 					{
 						reader.BaseStream.Position = chunkOffset + baseOffset;
@@ -51,104 +47,11 @@ namespace DXShaderRestorer
 								}
 							// ISGN
 							case 0x4E475349:
-								{
-									uint inputChunkLength = reader.ReadUInt32();
-									uint inputCount = reader.ReadUInt32();
-									inputSignatures = new ShaderInputSignature[inputCount];
-									uint inputUnknown = reader.ReadUInt32();
-
-									for (int i = 0; i < inputCount; i++)
-									{
-										inputSignatures[i] = new ShaderInputSignature();
-										inputSignatures[i].Read(reader);
-									}
-								}
+								inputSignatureChunk.Read(reader);
 								break;
 							// SHDR
 							case 0x52444853:
-								{
-									shaderChunkLength = reader.ReadUInt32();
-									uint shaderVersion = reader.ReadUInt32();
-									shaderDataLength = reader.ReadUInt32();
-									List<byte[]> inputDeclarations = new List<byte[]>();
-									bool pixelShader = false;
-									int inputSignatureIndex = 0;
-
-									while (reader.BaseStream.Position < reader.BaseStream.Length)
-									{
-										long pos = reader.BaseStream.Position;
-										uint metadata = reader.ReadUInt32();
-										uint opcode = metadata & 0x00007ff;
-										int tokenLength = (int)((metadata & 0x7f000000) >> 22);
-
-										// OPCODE_DCL_INPUT/OPCODE_DCL_INPUT_PS in HLSLcc
-										if (opcode == 95 || opcode == 98)
-										{
-											if (shaderInputOffset == 0)
-											{
-												shaderInputOffset = pos;
-											}
-
-											long operandPos = reader.BaseStream.Position;
-											reader.BaseStream.Position = pos;
-											byte[] inputBytes = reader.ReadBytes(tokenLength);
-											reader.BaseStream.Position = operandPos;
-
-											if (opcode == 95)
-											{
-												inputDeclarations.Add(inputBytes);
-											}
-											else if (opcode == 98)
-											{
-												pixelShader = true;
-
-												uint operandMetadata = reader.ReadUInt32();
-												ShaderInputComponentFlags mask = (ShaderInputComponentFlags)((operandMetadata & 0x000000f0) >> 4);
-												uint register = reader.ReadUInt32();
-
-												for (int i = inputSignatureIndex; i < inputSignatures.Length; i++)
-												{
-													ShaderInputSignature sig = inputSignatures[i];
-
-													if (sig.SystemValueType != 0)
-													{
-														continue;
-													}
-													else if (mask == sig.ReadWriteMask && register == sig.Register)
-													{
-														inputSignatureIndex = i + 1;
-														break;
-													}
-
-													// Add input declaration modified to fit signature
-													byte[] inputCopy = (byte[])inputBytes.Clone();
-													inputCopy[4] &= 0xf;
-													inputCopy[4] |= (byte)((int)inputSignatures[i].Mask << 4);
-													inputCopy[8] = (byte)inputSignatures[i].Register;
-													inputDeclarations.Add(inputCopy);
-													addedBytes += (uint)inputCopy.Length;
-												}
-
-												inputDeclarations.Add(inputBytes);
-											}
-										}
-										else if (shaderInputOffset != 0 || tokenLength == 0)
-										{
-											reader.BaseStream.Position -= 4;
-											break;
-										}
-
-										reader.BaseStream.Position = pos + tokenLength;
-									}
-
-									shaderInputEnd = reader.BaseStream.Position;
-
-									ShaderBindChannel[] channels = shaderSubProgram.BindChannels.Channels;
-									sortedInputDeclarations = pixelShader ? inputDeclarations.AsEnumerable() : inputDeclarations
-										.Select((x, i) => new KeyValuePair<byte[], int>(x, i))
-										.OrderBy(pair => channels[pair.Value].Source)
-										.Select(pair => pair.Key);
-								}
+								dataChunk.Read(reader, inputSignatureChunk.InputSignatures);
 								break;
 						}
 					}
@@ -163,7 +66,7 @@ namespace DXShaderRestorer
 					chunkOffsets.Insert(0, bodyOffset - baseOffset + 4);
 					chunkCount += 1;
 					totalSize += (uint)resourceChunkData.Length;
-					totalSize += addedBytes;
+					totalSize += dataChunk.AddedBytes;
 
 					writer.Write(magicBytes);
 					writer.Write(checksum);
@@ -176,24 +79,24 @@ namespace DXShaderRestorer
 					}
 					writer.Write(resourceChunkData);
 
-					if (shaderInputOffset != 0)
+					if (dataChunk.InputOffset != 0)
 					{
-						byte[] preInputBytes = reader.ReadBytes((int)shaderInputOffset - (int)reader.BaseStream.Position);
+						byte[] preInputBytes = reader.ReadBytes((int)dataChunk.InputOffset - (int)reader.BaseStream.Position);
 						writer.Write(preInputBytes);
 
-						foreach (byte[] input in sortedInputDeclarations)
+						foreach (byte[] input in dataChunk.InputDeclarations)
 						{
 							writer.Write(input);
 						}
 
-						reader.BaseStream.Position = shaderInputEnd;
-						byte[] postInputBytes = reader.ReadBytes((int)reader.BaseStream.Length - (int)shaderInputEnd);
+						reader.BaseStream.Position = dataChunk.InputEnd;
+						byte[] postInputBytes = reader.ReadBytes((int)reader.BaseStream.Length - (int)dataChunk.InputEnd);
 						writer.Write(postInputBytes);
 
 						writer.BaseStream.Position = chunkOffsets.Last() + 4;
-						writer.Write(shaderChunkLength + addedBytes);
+						writer.Write(dataChunk.ChunkLength + dataChunk.AddedBytes);
 						writer.BaseStream.Position += 4;
-						writer.Write(shaderDataLength + addedBytes / 4);
+						writer.Write(dataChunk.DataLength + dataChunk.AddedBytes / 4);
 					}
 					else
 					{
